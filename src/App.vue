@@ -114,7 +114,7 @@ import * as pdfjsLib from 'pdfjs-dist'
 import { Plus, Picture } from '@element-plus/icons-vue'
 
 // 设置PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = '/node_modules/pdfjs-dist/build/pdf.worker.js'
+pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.js'
 
 export default {
   name: 'App',
