@@ -16,7 +16,7 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
-      external: ['pdfjs-dist/build/pdf.worker.js']
+      // 移除external配置，因为我们现在使用public目录下的worker文件
     }
   }
 })

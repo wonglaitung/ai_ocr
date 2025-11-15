@@ -2,8 +2,11 @@
   <div class="pdf-ocr-container">
     <el-container class="main-container">
       <!-- 左侧PDF文件清单 -->
-      <el-aside width="250px" class="sidebar">
-        <h3>PDF文件清单</h3>
+      <el-aside v-if="showSidebar" width="250px" class="sidebar">
+        <div class="sidebar-header">
+          <h3>PDF文件清单</h3>
+          <el-button @click="toggleSidebar" :icon="Hide" size="small" class="toggle-sidebar-btn" title="隐藏"></el-button>
+        </div>
         <el-upload
           class="upload-container"
           drag
@@ -25,6 +28,9 @@
 
       <!-- 中间PDF预览区域 -->
       <el-main class="pdf-preview">
+        <div v-if="!showSidebar" class="show-sidebar-btn-container">
+          <el-button @click="toggleSidebar" :icon="View" size="small" title="显示PDF文件清单"></el-button>
+        </div>
         <div class="upload-area" v-if="!currentPdfUrl">
           <el-upload
             class="preview-upload"
@@ -43,9 +49,9 @@
         </div>
         <div v-else class="pdf-container">
           <div class="pdf-controls">
-            <el-button @click="prevPage" :disabled="pageNum <= 1" size="small">上一页</el-button>
+            <el-button @click="prevPage" :disabled="pageNum <= 1" :icon="ArrowLeft" size="small" circle></el-button>
             <span>第 {{ pageNum }} 页，共 {{ pdfTotalPages }} 页</span>
-            <el-button @click="nextPage" :disabled="pageNum >= pdfTotalPages" size="small">下一页</el-button>
+            <el-button @click="nextPage" :disabled="pageNum >= pdfTotalPages" :icon="ArrowRight" size="small" circle></el-button>
             <div class="page-navigation-inline">
               <el-input-number 
                 v-model="goToPageNumber" 
@@ -54,7 +60,7 @@
                 size="small"
                 style="width: 100px; margin: 0 10px;"
               />
-              <el-button @click="goToPageByNumber" size="small">跳转</el-button>
+              <el-button @click="goToPageByNumber" :icon="Right" size="small" circle title="跳转到指定页"></el-button>
             </div>
           </div>
           <div class="pdf-viewer">
@@ -65,7 +71,10 @@
 
       <!-- 右侧OCR识别内容 -->
       <el-aside width="350px" class="ocr-content">
-        <h3>OCR识别结果</h3>
+        <div class="ocr-header">
+          <h3>OCR识别结果</h3>
+          <el-button v-if="!showSidebar" @click="toggleSidebar" :icon="View" size="small" class="toggle-sidebar-btn" title="显示清单"></el-button>
+        </div>
         <div class="search-controls">
           <el-input 
             v-model="searchText" 
@@ -75,12 +84,12 @@
             size="small"
           >
             <template #append>
-              <el-button @click="performSearch" size="small">搜索</el-button>
+              <el-button @click="performSearch" :icon="Search" size="small"></el-button>
             </template>
           </el-input>
           <div v-if="searchResults.length > 0" class="search-info">
-            找到 {{ searchResults.length }} 个匹配项 (分布在 {{ getUniquePageCount() }} 页中)
-            <div class="page-links">
+            <span class="match-count">找到 {{ searchResults.length }} 个匹配项</span>
+            <span class="page-links-inline">
               <span 
                 v-for="page in getUniquePages()" 
                 :key="page"
@@ -89,7 +98,7 @@
               >
                 {{ page }}
               </span>
-            </div>
+            </span>
           </div>
         </div>
         <div class="ocr-controls">
@@ -111,7 +120,7 @@
 <script>
 import { ref, onMounted, nextTick } from 'vue'
 import * as pdfjsLib from 'pdfjs-dist'
-import { Plus, Picture } from '@element-plus/icons-vue'
+import { Plus, Picture, ArrowLeft, ArrowRight, Search, CopyDocument, Hide, View, Right } from '@element-plus/icons-vue'
 
 // 设置PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.js'
@@ -120,7 +129,14 @@ export default {
   name: 'App',
   components: {
     Plus,
-    Picture
+    Picture,
+    ArrowLeft,
+    ArrowRight,
+    Search,
+    CopyDocument,
+    Hide,
+    View,
+    Right
   },
   setup() {
     const pdfFiles = ref([])
@@ -134,6 +150,7 @@ export default {
     const searchResults = ref([])
     const currentSearchIndex = ref(-1)
     const goToPageNumber = ref(1)
+    const showSidebar = ref(true)
     
     // 处理文件上传
     const handleFileUpload = (file) => {
@@ -263,13 +280,6 @@ export default {
       }
     }
     
-    // 获取唯一页数
-    const getUniquePageCount = () => {
-      if (!searchResults.value || searchResults.value.length === 0) return 0
-      const uniquePages = new Set(searchResults.value.map(result => result.page))
-      return uniquePages.size
-    }
-    
     // 获取唯一页面数组
     const getUniquePages = () => {
       if (!searchResults.value || searchResults.value.length === 0) return []
@@ -302,6 +312,11 @@ export default {
       // 确保页码不超过总页数
       const targetPage = Math.min(goToPageNumber.value, pdfTotalPages.value || 1)
       await goToPage(targetPage)
+    }
+    
+    // 切换侧边栏显示
+    const toggleSidebar = () => {
+      showSidebar.value = !showSidebar.value
     }
     
     // 执行搜索
@@ -451,6 +466,15 @@ export default {
       searchResults,
       currentSearchIndex,
       goToPageNumber,
+      showSidebar,
+      // 图标组件
+      Hide,
+      View,
+      ArrowLeft,
+      ArrowRight,
+      Search,
+      CopyDocument,
+      Right,
       handleFileUpload,
       selectPdfFile,
       renderPdf,
@@ -460,10 +484,10 @@ export default {
       copyText,
       performSearch,
       formatFileSize,
-      getUniquePageCount,
       getUniquePages,
       goToPage,
-      goToPageByNumber
+      goToPageByNumber,
+      toggleSidebar
     }
   }
 }
@@ -499,10 +523,21 @@ body, .pdf-ocr-container, .main-container, .el-button, .el-input, .el-table {
   flex-direction: column;
 }
 
-.sidebar h3 {
+.sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   margin-bottom: 15px;
+}
+
+.sidebar h3 {
+  margin-bottom: 0;
   font-size: 16px;
   font-weight: 600;
+}
+
+.toggle-sidebar-btn {
+  padding: 4px 8px;
 }
 
 .upload-container {
@@ -521,6 +556,11 @@ body, .pdf-ocr-container, .main-container, .el-button, .el-input, .el-table {
   align-items: center;
   justify-content: center;
   background-color: #f9f9f9;
+}
+
+.show-sidebar-btn-container {
+  align-self: flex-start;
+  margin-bottom: 10px;
 }
 
 .pdf-controls {
@@ -577,8 +617,15 @@ body, .pdf-ocr-container, .main-container, .el-button, .el-input, .el-table {
   flex-direction: column;
 }
 
-.ocr-content h3 {
+.ocr-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   margin-bottom: 15px;
+}
+
+.ocr-content h3 {
+  margin-bottom: 0;
   font-size: 16px;
   font-weight: 600;
 }
@@ -591,6 +638,18 @@ body, .pdf-ocr-container, .main-container, .el-button, .el-input, .el-table {
   font-size: 12px;
   color: #606266;
   margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.match-count {
+  margin-right: 10px;
+}
+
+.page-links-inline {
+  display: inline-flex;
+  flex-wrap: wrap;
 }
 
 .page-links {
@@ -600,7 +659,7 @@ body, .pdf-ocr-container, .main-container, .el-button, .el-input, .el-table {
 .page-link {
   display: inline-block;
   padding: 2px 8px;
-  margin-right: 5px;
+  margin: 0 5px;
   background-color: #ecf5ff;
   color: #409eff;
   border: 1px solid #d9ecff;
@@ -650,6 +709,20 @@ body, .pdf-ocr-container, .main-container, .el-button, .el-input, .el-table {
 .el-button {
   font-size: 14px;
   padding: 8px 16px;
+}
+
+.el-button--small {
+  padding: 6px 12px;
+}
+
+.el-button.is-circle {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .el-input__inner {
