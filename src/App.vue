@@ -43,9 +43,19 @@
         </div>
         <div v-else class="pdf-container">
           <div class="pdf-controls">
-            <el-button @click="prevPage" :disabled="pageNum <= 1">上一页</el-button>
+            <el-button @click="prevPage" :disabled="pageNum <= 1" size="small">上一页</el-button>
             <span>第 {{ pageNum }} 页，共 {{ pdfTotalPages }} 页</span>
-            <el-button @click="nextPage" :disabled="pageNum >= pdfTotalPages">下一页</el-button>
+            <el-button @click="nextPage" :disabled="pageNum >= pdfTotalPages" size="small">下一页</el-button>
+            <div class="page-navigation-inline">
+              <el-input-number 
+                v-model="goToPageNumber" 
+                :min="1" 
+                :max="pdfTotalPages || 1" 
+                size="small"
+                style="width: 100px; margin: 0 10px;"
+              />
+              <el-button @click="goToPageByNumber" size="small">跳转</el-button>
+            </div>
           </div>
           <div class="pdf-viewer">
             <canvas ref="pdfCanvas" class="pdf-canvas"></canvas>
@@ -62,18 +72,29 @@
             placeholder="搜索PDF内容" 
             @keyup.enter="performSearch"
             style="margin-bottom: 10px;"
+            size="small"
           >
             <template #append>
-              <el-button @click="performSearch">搜索</el-button>
+              <el-button @click="performSearch" size="small">搜索</el-button>
             </template>
           </el-input>
           <div v-if="searchResults.length > 0" class="search-info">
-            找到 {{ searchResults.length }} 个匹配项
+            找到 {{ searchResults.length }} 个匹配项 (分布在 {{ getUniquePageCount() }} 页中)
+            <div class="page-links">
+              <span 
+                v-for="page in getUniquePages()" 
+                :key="page"
+                class="page-link"
+                @click="goToPage(page)"
+              >
+                {{ page }}
+              </span>
+            </div>
           </div>
         </div>
         <div class="ocr-controls">
-          <el-button @click="performOCR" type="primary" :loading="ocrLoading">执行OCR识别</el-button>
-          <el-button @click="copyText">复制文本</el-button>
+          <el-button @click="performOCR" type="primary" :loading="ocrLoading" size="small">执行OCR识别</el-button>
+          <el-button @click="copyText" size="small">复制文本</el-button>
         </div>
         <div class="ocr-result" v-if="ocrResult">
           <pre>{{ ocrResult }}</pre>
@@ -112,6 +133,7 @@ export default {
     const searchText = ref('')
     const searchResults = ref([])
     const currentSearchIndex = ref(-1)
+    const goToPageNumber = ref(1)
     
     // 处理文件上传
     const handleFileUpload = (file) => {
@@ -241,6 +263,47 @@ export default {
       }
     }
     
+    // 获取唯一页数
+    const getUniquePageCount = () => {
+      if (!searchResults.value || searchResults.value.length === 0) return 0
+      const uniquePages = new Set(searchResults.value.map(result => result.page))
+      return uniquePages.size
+    }
+    
+    // 获取唯一页面数组
+    const getUniquePages = () => {
+      if (!searchResults.value || searchResults.value.length === 0) return []
+      const uniquePages = new Set(searchResults.value.map(result => result.page))
+      return Array.from(uniquePages).sort((a, b) => a - b)
+    }
+    
+    // 跳转到指定页面
+    const goToPage = async (page) => {
+      if (page < 1 || page > pdfTotalPages.value) return
+      
+      pageNum.value = page
+      console.log(`跳转到第 ${page} 页`)
+      
+      // 重新渲染PDF页面
+      if (currentPdfUrl.value) {
+        try {
+          const loadingTask = pdfjsLib.getDocument(currentPdfUrl.value)
+          const pdf = await loadingTask.promise
+          await renderPdfPage(pdf, pageNum.value)
+        } catch (error) {
+          console.error('PDF渲染失败:', error)
+        }
+      }
+    }
+    
+    // 通过页码输入跳转
+    const goToPageByNumber = async () => {
+      if (!goToPageNumber.value || goToPageNumber.value < 1) return
+      // 确保页码不超过总页数
+      const targetPage = Math.min(goToPageNumber.value, pdfTotalPages.value || 1)
+      await goToPage(targetPage)
+    }
+    
     // 执行搜索
     const performSearch = async () => {
       if (!searchText.value || !currentPdfUrl.value) return
@@ -332,7 +395,7 @@ export default {
       // 高亮当前页面的匹配项
       if (currentPageMatches && currentPageMatches.length > 0) {
         // 设置高亮样式
-        context.fillStyle = 'rgba(255, 255, 0, 0.4)' // 黄色半透明
+        context.fillStyle = 'rgba(255, 255, 0, 0.5)' // 黄色半透明
         context.strokeStyle = 'red'
         context.lineWidth = 1.5
         
@@ -340,29 +403,23 @@ export default {
         const textContent = await page.getTextContent()
         const items = textContent.items
         
-        // 遍历文本项，高亮匹配的内容
-        let textStartIndex = 0
+        // 遍历文本项，高亮包含搜索词的内容
         for (const item of items) {
-          const itemStartIndex = textStartIndex
-          const itemEndIndex = textStartIndex + item.str.length
-          
           // 检查当前文本项是否包含搜索词
           if (item.str.toLowerCase().includes(searchText.value.toLowerCase())) {
-            // 获取文本项的变换矩阵
+            // 使用PDF.js的变换矩阵来计算准确位置
             const transform = item.transform
-            // 计算位置
+            // 计算实际坐标 (PDF坐标系与Canvas坐标系不同，需要转换)
             const x = transform[4] * scale
-            const y = canvas.height - (transform[5] * scale + 10)
-            // 计算大致的宽度和高度
-            const width = item.width * scale
-            const height = 15
+            const y = canvas.height - (transform[5] * scale + (item.height || 12) * scale)
+            // 计算宽度和高度
+            const width = item.width ? item.width * scale : context.measureText(item.str).width
+            const height = (item.height || 14) * scale * 1.2 // 增加高度以完全覆盖文字
             
             // 绘制高亮矩形
-            context.fillRect(x, y - height, width, height)
-            context.strokeRect(x, y - height, width, height)
+            context.fillRect(x, y, width, height)
+            context.strokeRect(x, y, width, height)
           }
-          
-          textStartIndex = itemEndIndex
         }
       }
     }
@@ -393,6 +450,7 @@ export default {
       searchText,
       searchResults,
       currentSearchIndex,
+      goToPageNumber,
       handleFileUpload,
       selectPdfFile,
       renderPdf,
@@ -401,7 +459,11 @@ export default {
       performOCR,
       copyText,
       performSearch,
-      formatFileSize
+      formatFileSize,
+      getUniquePageCount,
+      getUniquePages,
+      goToPage,
+      goToPageByNumber
     }
   }
 }
@@ -412,6 +474,12 @@ export default {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+}
+
+/* 统一字体大小和行高 */
+body, .pdf-ocr-container, .main-container, .el-button, .el-input, .el-table {
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 .pdf-ocr-container {
@@ -433,6 +501,8 @@ export default {
 
 .sidebar h3 {
   margin-bottom: 15px;
+  font-size: 16px;
+  font-weight: 600;
 }
 
 .upload-container {
@@ -459,6 +529,11 @@ export default {
   align-items: center;
   gap: 15px;
   margin-bottom: 20px;
+}
+
+.page-navigation-inline {
+  display: flex;
+  align-items: center;
 }
 
 .pdf-container {
@@ -504,6 +579,8 @@ export default {
 
 .ocr-content h3 {
   margin-bottom: 15px;
+  font-size: 16px;
+  font-weight: 600;
 }
 
 .search-controls {
@@ -514,6 +591,27 @@ export default {
   font-size: 12px;
   color: #606266;
   margin-bottom: 10px;
+}
+
+.page-links {
+  margin-top: 5px;
+}
+
+.page-link {
+  display: inline-block;
+  padding: 2px 8px;
+  margin-right: 5px;
+  background-color: #ecf5ff;
+  color: #409eff;
+  border: 1px solid #d9ecff;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.page-link:hover {
+  background-color: #409eff;
+  color: white;
 }
 
 .ocr-controls {
@@ -546,5 +644,30 @@ export default {
   border: 1px solid #dcdfe6;
   border-radius: 4px;
   overflow: auto;
+}
+
+/* Element Plus组件样式统一 */
+.el-button {
+  font-size: 14px;
+  padding: 8px 16px;
+}
+
+.el-input__inner {
+  font-size: 14px;
+  height: 32px;
+}
+
+.el-input-number {
+  font-size: 14px;
+}
+
+.el-input-number .el-input__inner {
+  height: 32px;
+  padding: 0 10px;
+}
+
+.el-input-number__decrease,
+.el-input-number__increase {
+  width: 30px;
 }
 </style>
