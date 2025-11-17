@@ -9,9 +9,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "vue": "^3.3.4",
+    "@vue-office/docx": "^1.6.3",
+    "element-plus": "^2.4.1",
     "pdfjs-dist": "^3.11.174",
-    "element-plus": "^2.4.1"
+    "vue": "^3.3.4",
+    "vue-demi": "^0.14.10"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^4.2.3",
