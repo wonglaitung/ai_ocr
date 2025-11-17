@@ -28,10 +28,17 @@ module.exports = {
         ]
       },
       {
-        test: /\.(png|jpg|gif|svg|woff|woff2|eot|ttf)$/,
+        test: /\.(png|jpg|gif|svg)$/,
         loader: 'file-loader',
         options: {
           name: '[name].[hash:7].[ext]'
+        }
+      },
+      {
+        test: /\.(woff|woff2|eot|ttf)$/,
+        type: 'asset/resource',
+        generator: {
+          filename: 'fonts/[name][ext]'
         }
       }
     ]
