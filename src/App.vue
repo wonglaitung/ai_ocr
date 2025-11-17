@@ -5,7 +5,7 @@
       <el-aside v-if="showSidebar" width="250px" class="sidebar">
         <div class="sidebar-header">
           <h3>文件清单</h3>
-          <el-button @click="toggleSidebar" icon="el-icon-close" size="small" class="toggle-sidebar-btn" title="隐藏"></el-button>
+          <el-button @click="toggleSidebar" icon="el-icon-d-arrow-right" size="small" class="toggle-sidebar-btn" title="隐藏"></el-button>
         </div>
         <el-upload
           class="upload-container"
@@ -30,7 +30,7 @@
       <!-- 中间预览区域 -->
       <el-main class="preview-area">
         <div v-if="!showSidebar" class="show-sidebar-btn-container">
-          <el-button @click="toggleSidebar" icon="el-icon-view" size="small" title="显示文件清单"></el-button>
+          <el-button @click="toggleSidebar" icon="el-icon-d-arrow-left" size="small" title="显示文件清单"></el-button>
         </div>
         <div class="upload-area" v-if="!currentFileUrl">
           <el-upload
@@ -81,7 +81,7 @@
       <el-aside width="350px" class="content-area">
         <div class="content-header">
           <h3>{{ currentFileType === 'pdf' ? 'PDF OCR识别结果' : '文件内容' }}</h3>
-          <el-button v-if="!showSidebar" @click="toggleSidebar" icon="el-icon-view" size="small" class="toggle-sidebar-btn" title="显示清单"></el-button>
+          <el-button v-if="!showSidebar" @click="toggleSidebar" icon="el-icon-d-arrow-left" size="small" class="toggle-sidebar-btn" title="显示清单"></el-button>
         </div>
         <!-- 搜索控件 -->
         <div class="search-controls" v-if="currentFileType === 'pdf' || currentFileType === 'docx'">
@@ -776,11 +776,21 @@ body, .pdf-ocr-container, .main-container, .el-button, .el-input, .el-table {
 
 .upload-container {
   margin-bottom: 20px;
+  height: 120px;
 }
 
-.file-list {
-  flex: 1;
-  overflow-y: auto;
+.upload-container .el-upload {
+  width: 100%;
+  height: 100%;
+}
+
+.upload-container .el-upload-dragger {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
 }
 
 .preview-area {
