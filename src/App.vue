@@ -617,14 +617,15 @@ export default {
           // 更新OCR结果
           this.contentResult = ocrText
           
-          // 存储OCR结果到缓存中
+          // 存储OCR结果到缓存中，替换该页面的现有结果，避免重复
           if (!this.ocrResults[this.pageNum]) {
             this.ocrResults[this.pageNum] = []
           }
-          this.ocrResults[this.pageNum].push({
+          // 替换该页面的OCR结果，而不是追加，以避免重复
+          this.ocrResults[this.pageNum] = [{
             text: ocrText,
             imageResults: ocrResults
-          })
+          }]
         } else {
           this.contentResult = `在第${this.pageNum}页未找到任何图像`
         }
