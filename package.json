@@ -12,6 +12,7 @@
     "@vue-office/docx": "^1.6.3",
     "element-ui": "^2.15.14",
     "pdfjs-dist": "^3.11.174",
+    "pdfkit": "^0.17.2",
     "tesseract.js": "^6.0.1",
     "vue": "^2.7.14",
     "vue-template-compiler": "^2.7.14"

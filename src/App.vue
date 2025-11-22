@@ -229,21 +229,28 @@ export default {
         const currentPageMatches = this.searchResults.filter(match => match.page === pageNumber)
         await this.renderPdfPageWithHighlights(pdf, pageNumber, currentPageMatches)
       } else {
-        const page = await pdf.getPage(pageNumber)
-        const scale = 1.5
-        const viewport = page.getViewport({ scale })
-        
-        const canvas = this.$refs.pdfCanvas
-        const context = canvas.getContext('2d')
-        canvas.height = viewport.height
-        canvas.width = viewport.width
-        
-        const renderContext = {
-          canvasContext: context,
-          viewport: viewport
-        }
-        await page.render(renderContext).promise
+        const { context } = await this.renderBasePdfPage(pdf, pageNumber)
       }
+    },
+    
+    // 基础PDF渲染功能
+    async renderBasePdfPage(pdf, pageNumber) {
+      const page = await pdf.getPage(pageNumber)
+      const scale = 1.5
+      const viewport = page.getViewport({ scale })
+
+      const canvas = this.$refs.pdfCanvas
+      const context = canvas.getContext('2d')
+      canvas.height = viewport.height
+      canvas.width = viewport.width
+
+      const renderContext = {
+        canvasContext: context,
+        viewport: viewport
+      }
+      await page.render(renderContext).promise
+
+      return { page, context, scale, canvas }
     },
     
     // 提取PDF页面中的图像
@@ -511,32 +518,11 @@ export default {
               // 如果数据是URL，直接使用
               if (img.data.url) {
                 console.log(`检测到编码图像，使用URL: ${img.data.url}`)
-                try {
-                  // 对图像执行OCR识别
-                  const result = await Tesseract.recognize(
-                    img.data.url,
-                    'chi_sim+eng', // 支持中文和英文
-                    {
-                      logger: m => console.log(m) // OCR进度日志
-                    }
-                  )
-                  
+                const result = await this.processImageForOCR(img.data.url, img.id, i)
+                if (result) {
                   ocrText += `\n--- 图像 ${i + 1} 识别结果 ---\n`
-                  ocrText += result.data.text
-                  
-                  // 保存OCR结果和图像位置信息
-                  ocrResults.push({
-                    text: result.data.text,
-                    imageId: img.id,
-                    pageIndex: this.pageNum - 1, // PDF.js使用0基索引
-                    boundingRect: null // 暂时无法获取图像在页面上的确切位置
-                  })
-                  
-                  console.log(`图像${i+1} OCR结果:`, result.data.text)
-                } catch (error) {
-                  console.error(`处理图像${i+1}时出错:`, error)
-                  ocrText += `\n--- 图像 ${i + 1} 处理失败 ---\n`
-                  ocrText += `错误: ${error.message}\n`
+                  ocrText += result.text
+                  ocrResults.push(result)
                 }
                 continue // 继续下一个图像
               }
@@ -612,27 +598,12 @@ export default {
               const blob = await new Promise(resolve => canvas.toBlob(resolve))
               const url = URL.createObjectURL(blob)
               
-              // 对图像执行OCR识别
-              const result = await Tesseract.recognize(
-                url,
-                'chi_sim+eng', // 支持中文和英文
-                {
-                  logger: m => console.log(m) // OCR进度日志
-                }
-              )
-              
-              ocrText += `\n--- 图像 ${i + 1} 识别结果 ---\n`
-              ocrText += result.data.text
-              
-              // 保存OCR结果和图像位置信息
-              ocrResults.push({
-                text: result.data.text,
-                imageId: img.id,
-                pageIndex: this.pageNum - 1, // PDF.js使用0基索引
-                boundingRect: null // 暂时无法获取图像在页面上的确切位置
-              })
-              
-              console.log(`图像${i+1} OCR结果:`, result.data.text)
+              const result = await this.processImageForOCR(url, img.id, i)
+              if (result) {
+                ocrText += `\n--- 图像 ${i + 1} 识别结果 ---\n`
+                ocrText += result.text
+                ocrResults.push(result)
+              }
               
               // 释放临时URL
               URL.revokeObjectURL(url)
@@ -662,6 +633,30 @@ export default {
         this.contentResult = `OCR识别失败: ${error.message}`
       } finally {
         this.ocrLoading = false
+      }
+    },
+    
+    // 处理图像进行OCR识别
+    async processImageForOCR(imageData, imageId, i) {
+      try {
+        const result = await Tesseract.recognize(
+          imageData,
+          'chi_sim+eng', // 支持中文和英文
+          {
+            logger: m => console.log(m) // OCR进度日志
+          }
+        )
+        
+        // 保存OCR结果和图像位置信息
+        return {
+          text: result.data.text,
+          imageId: imageId,
+          pageIndex: this.pageNum - 1, // PDF.js使用0基索引
+          boundingRect: null // 暂时无法获取图像在页面上的确切位置
+        }
+      } catch (error) {
+        console.error(`处理图像${i+1}时出错:`, error)
+        return null
       }
     },
     
@@ -785,7 +780,7 @@ export default {
           const pdf = await loadingTask.promise
           const totalPages = pdf.numPages
           
-          console.log(`开始搜索 "${this.searchText}"，总页数: ${totalPages}`)
+          console.log(`开始搜索 "${this.searchText}", 总页数: ${totalPages}`)
         
         // 存储所有页面的搜索结果
         const allMatches = []
@@ -800,45 +795,9 @@ export default {
           const textStrings = textItems.map(item => item.str)
           const fullText = textStrings.join('')
           
-          // 搜索文本
-          const matches = []
-          let searchStart = 0
-          let searchIndex
-          
-          // 先尝试直接匹配（原始文本）
-          while ((searchIndex = fullText.toLowerCase().indexOf(this.searchText.toLowerCase(), searchStart)) !== -1) {
-            matches.push({
-              text: this.searchText,
-              startIndex: searchIndex,
-              endIndex: searchIndex + this.searchText.length,
-              page: pageNum
-            })
-            searchStart = searchIndex + 1
-          }
-          
-          // 如果没有找到匹配项，尝试去除空格后匹配
-          if (this.searchText && this.searchText.length > 1) { // 只对长度大于1的搜索词进行空格处理
-            const searchWithoutSpaces = this.searchText.replace(/\s+/g, '')
-            if (searchWithoutSpaces && searchWithoutSpaces !== this.searchText.replace(/\s+/g, '')) {
-              let cleanFullText = fullText.replace(/\s+/g, '')
-              let cleanSearchStart = 0
-              let cleanSearchIndex
-              
-              while ((cleanSearchIndex = cleanFullText.toLowerCase().indexOf(searchWithoutSpaces.toLowerCase(), cleanSearchStart)) !== -1) {
-                matches.push({
-                  text: this.searchText,
-                  startIndex: cleanSearchIndex,
-                  endIndex: cleanSearchIndex + searchWithoutSpaces.length,
-                  page: pageNum,
-                  matchType: 'spaced-text' // 标记这是通过去除空格匹配的
-                })
-                cleanSearchStart = cleanSearchIndex + 1
-              }
-            }
-          }
-          
-          // 将当前页面的匹配项添加到总结果中
-          allMatches.push(...matches)
+          // 搜索页面文本
+          const pageMatches = this.searchTextInContent(fullText, pageNum)
+          allMatches.push(...pageMatches)
           
           // 检查OCR结果中是否有匹配项
           console.log(`第${pageNum}页OCR结果数量:`, this.ocrResults[pageNum] ? this.ocrResults[pageNum].length : 0)
@@ -848,142 +807,18 @@ export default {
                 for (const imageResult of ocrResult.imageResults) {
                   const ocrText = imageResult.text
                   console.log(`检查OCR文本: "${ocrText.substring(0, 100)}..." (总长度: ${ocrText.length})`)
-                  let ocrSearchStart = 0
-                  let ocrSearchIndex
                   
-                  console.log(`OCR搜索调试 - 搜索词: "${this.searchText}", OCR文本: "${ocrText.substring(0, 100)}..."`)
-                  
-                  // 处理OCR文本中的空格问题
-                  // 先尝试直接匹配（原始文本）
-                  let directMatchCount = 0
-                  while ((ocrSearchIndex = ocrText.toLowerCase().indexOf(this.searchText.toLowerCase(), ocrSearchStart)) !== -1) {
-                    console.log(`在OCR文本中找到直接匹配: "${this.searchText}" at index ${ocrSearchIndex}`)
-                    allMatches.push({
-                      text: this.searchText,
-                      startIndex: ocrSearchIndex,
-                      endIndex: ocrSearchIndex + this.searchText.length,
-                      page: pageNum,
-                      isFromImage: true, // 标记这是来自图像OCR的结果
-                      imageResult: imageResult
-                    })
-                    ocrSearchStart = ocrSearchIndex + 1
-                    directMatchCount++
-                  }
-                  
-                  // 如果没有找到直接匹配，尝试去除空格后匹配
-                  if (this.searchText && this.searchText.length > 1) { // 只对长度大于1的搜索词进行空格处理
-                    const searchWithoutSpaces = this.searchText.replace(/\s+/g, '')
-                    const cleanOcrText = ocrText.replace(/\s+/g, '')
-                    
-                    console.log(`OCR搜索调试 - 去空格搜索: "${searchWithoutSpaces}", OCR文本(去空格): "${cleanOcrText.substring(0, 100)}..."`)
-                    
-                    let spacedMatchCount = 0 // 将变量移到外层以确保作用域正确
-                    if (searchWithoutSpaces && searchWithoutSpaces !== this.searchText.replace(/\s+/g, '')) {
-                      let cleanSearchStart = 0
-                      let cleanSearchIndex
-                      
-                      while ((cleanSearchIndex = cleanOcrText.toLowerCase().indexOf(searchWithoutSpaces.toLowerCase(), cleanSearchStart)) !== -1) {
-                        console.log(`在OCR文本(去空格)中找到匹配: "${searchWithoutSpaces}" at index ${cleanSearchIndex}`)
-                        // 找到匹配位置后，需要重新计算在原始文本中的位置
-                        allMatches.push({
-                          text: this.searchText,
-                          startIndex: cleanSearchIndex, // 实际上这里需要更精确的位置计算
-                          endIndex: cleanSearchIndex + searchWithoutSpaces.length,
-                          page: pageNum,
-                          isFromImage: true, // 标记这是来自图像OCR的结果
-                          imageResult: imageResult,
-                          matchType: 'spaced-text' // 标记这是通过去除空格匹配的
-                        })
-                        cleanSearchStart = cleanSearchIndex + 1
-                        spacedMatchCount++
-                      }
-                      
-                      if (spacedMatchCount > 0) {
-                        console.log(`OCR搜索调试 - 找到${spacedMatchCount}个去空格匹配项`)
-                      }
-                      
-                      // 如果仍然没有找到匹配项，尝试更灵活的匹配方式
-                      if (spacedMatchCount === 0 && searchWithoutSpaces) {
-                        console.log(`OCR搜索调试 - 尝试灵活匹配: 搜索"${searchWithoutSpaces}"在OCR文本中`)
-                        
-                        // 尝试在OCR文本中按字符顺序查找（允许中间有其他字符）
-                        let pos = 0
-                        let found = true
-                        let lastFoundPos = 0
-                        
-                        for (let char of searchWithoutSpaces.toLowerCase()) {
-                          let foundPos = cleanOcrText.toLowerCase().indexOf(char, pos)
-                          if (foundPos === -1) {
-                            found = false
-                            break
-                          }
-                          pos = foundPos + 1
-                          lastFoundPos = foundPos
-                        }
-                        
-                        if (found) {
-                          console.log(`OCR搜索调试 - 灵活匹配成功: "${searchWithoutSpaces}"`)
-                          allMatches.push({
-                            text: this.searchText,
-                            startIndex: lastFoundPos - searchWithoutSpaces.length + 1,
-                            endIndex: lastFoundPos + 1,
-                            page: pageNum,
-                            isFromImage: true, // 标记这是来自图像OCR的结果
-                            imageResult: imageResult,
-                            matchType: 'flexible-text' // 标记这是通过灵活匹配的
-                          })
-                        }
-                      }
-                    } else {
-                      // 如果没有执行去空格匹配，也需要尝试灵活匹配
-                      if (searchWithoutSpaces) {
-                        console.log(`OCR搜索调试 - 尝试灵活匹配: 搜索"${searchWithoutSpaces}"在OCR文本中`)
-                        
-                        // 先清理OCR文本
-                        const cleanOcrText = ocrText.replace(/\s+/g, '')
-                        
-                        // 尝试在OCR文本中按字符顺序查找（允许中间有其他字符）
-                        let pos = 0
-                        let found = true
-                        let lastFoundPos = 0
-                        
-                        for (let char of searchWithoutSpaces.toLowerCase()) {
-                          let foundPos = cleanOcrText.toLowerCase().indexOf(char, pos)
-                          if (foundPos === -1) {
-                            found = false
-                            break
-                          }
-                          pos = foundPos + 1
-                          lastFoundPos = foundPos
-                        }
-                        
-                        if (found) {
-                          console.log(`OCR搜索调试 - 灵活匹配成功: "${searchWithoutSpaces}"`)
-                          allMatches.push({
-                            text: this.searchText,
-                            startIndex: lastFoundPos - searchWithoutSpaces.length + 1,
-                            endIndex: lastFoundPos + 1,
-                            page: pageNum,
-                            isFromImage: true, // 标记这是来自图像OCR的结果
-                            imageResult: imageResult,
-                            matchType: 'flexible-text' // 标记这是通过灵活匹配的
-                          })
-                        }
-                      }
-                    }
-                  }
-                  
-                  if (directMatchCount === 0 && (!this.searchText || this.searchText.length <= 1 || this.searchText.replace(/\s+/g, '') === this.searchText.replace(/\s+/g, ''))) {
-                    console.log(`OCR搜索调试 - 没有找到任何匹配项，OCR文本长度: ${ocrText.length}`)
-                  }
+                  // 搜索OCR文本
+                  const ocrMatches = this.searchTextInOCR(ocrText, pageNum, imageResult)
+                  allMatches.push(...ocrMatches)
                 }
               }
             }
           }
           
           // 在控制台打印每页的搜索结果
-          if (matches.length > 0 || (this.ocrResults[pageNum] && this.ocrResults[pageNum].some(ocr => ocr.imageResults && ocr.imageResults.some(ir => ir.text.toLowerCase().includes(this.searchText.toLowerCase()))))) {
-            console.log(`在第 ${pageNum} 页找到了 ${matches.length} 个页面文本匹配项和OCR匹配项`)
+          if (pageMatches.length > 0 || (this.ocrResults[pageNum] && this.ocrResults[pageNum].some(ocr => ocr.imageResults && ocr.imageResults.some(ir => ir.text.toLowerCase().includes(this.searchText.toLowerCase()))))) {
+            console.log(`在第 ${pageNum} 页找到了 ${pageMatches.length} 个页面文本匹配项和OCR匹配项`)
           }
         }
         
@@ -1019,23 +854,185 @@ export default {
     }
   },
     
+    // 在内容中搜索文本
+    searchTextInContent(fullText, pageNum) {
+      const matches = []
+      let searchStart = 0
+      let searchIndex
+      
+      // 先尝试直接匹配（原始文本）
+      while ((searchIndex = fullText.toLowerCase().indexOf(this.searchText.toLowerCase(), searchStart)) !== -1) {
+        matches.push({
+          text: this.searchText,
+          startIndex: searchIndex,
+          endIndex: searchIndex + this.searchText.length,
+          page: pageNum
+        })
+        searchStart = searchIndex + 1
+      }
+      
+      // 如果没有找到匹配项，尝试去除空格后匹配
+      if (this.searchText && this.searchText.length > 1) { // 只对长度大于1的搜索词进行空格处理
+        const searchWithoutSpaces = this.searchText.replace(/\s+/g, '')
+        if (searchWithoutSpaces && searchWithoutSpaces !== this.searchText.replace(/\s+/g, '')) {
+          let cleanFullText = fullText.replace(/\s+/g, '')
+          let cleanSearchStart = 0
+          let cleanSearchIndex
+          
+          while ((cleanSearchIndex = cleanFullText.toLowerCase().indexOf(searchWithoutSpaces.toLowerCase(), cleanSearchStart)) !== -1) {
+            matches.push({
+              text: this.searchText,
+              startIndex: cleanSearchIndex,
+              endIndex: cleanSearchIndex + searchWithoutSpaces.length,
+              page: pageNum,
+              matchType: 'spaced-text' // 标记这是通过去除空格匹配的
+            })
+            cleanSearchStart = cleanSearchIndex + 1
+          }
+        }
+      }
+      
+      return matches
+    },
+    
+    // 在OCR文本中搜索
+    searchTextInOCR(ocrText, pageNum, imageResult) {
+      const matches = []
+      let ocrSearchStart = 0
+      let ocrSearchIndex
+      
+      console.log(`OCR搜索调试 - 搜索词: "${this.searchText}", OCR文本: "${ocrText.substring(0, 100)}..."`)
+      
+      // 处理OCR文本中的空格问题
+      // 先尝试直接匹配（原始文本）
+      let directMatchCount = 0
+      while ((ocrSearchIndex = ocrText.toLowerCase().indexOf(this.searchText.toLowerCase(), ocrSearchStart)) !== -1) {
+        console.log(`在OCR文本中找到直接匹配: "${this.searchText}" at index ${ocrSearchIndex}`)
+        matches.push({
+          text: this.searchText,
+          startIndex: ocrSearchIndex,
+          endIndex: ocrSearchIndex + this.searchText.length,
+          page: pageNum,
+          isFromImage: true, // 标记这是来自图像OCR的结果
+          imageResult: imageResult
+        })
+        ocrSearchStart = ocrSearchIndex + 1
+        directMatchCount++
+      }
+      
+      // 如果没有找到直接匹配，尝试去除空格后匹配
+      if (this.searchText && this.searchText.length > 1) { // 只对长度大于1的搜索词进行空格处理
+        const searchWithoutSpaces = this.searchText.replace(/\s+/g, '')
+        const cleanOcrText = ocrText.replace(/\s+/g, '')
+        
+        console.log(`OCR搜索调试 - 去空格搜索: "${searchWithoutSpaces}", OCR文本(去空格): "${cleanOcrText.substring(0, 100)}..."`)
+        
+        let spacedMatchCount = 0 // 将变量移到外层以确保作用域正确
+        if (searchWithoutSpaces && searchWithoutSpaces !== this.searchText.replace(/\s+/g, '')) {
+          let cleanSearchStart = 0
+          let cleanSearchIndex
+          
+          while ((cleanSearchIndex = cleanOcrText.toLowerCase().indexOf(searchWithoutSpaces.toLowerCase(), cleanSearchStart)) !== -1) {
+            console.log(`在OCR文本(去空格)中找到匹配: "${searchWithoutSpaces}" at index ${cleanSearchIndex}`)
+            // 找到匹配位置后，需要重新计算在原始文本中的位置
+            matches.push({
+              text: this.searchText,
+              startIndex: cleanSearchIndex, // 实际上这里需要更精确的位置计算
+              endIndex: cleanSearchIndex + searchWithoutSpaces.length,
+              page: pageNum,
+              isFromImage: true, // 标记这是来自图像OCR的结果
+              imageResult: imageResult,
+              matchType: 'spaced-text' // 标记这是通过去除空格匹配的
+            })
+            cleanSearchStart = cleanSearchIndex + 1
+            spacedMatchCount++
+          }
+          
+          if (spacedMatchCount > 0) {
+            console.log(`OCR搜索调试 - 找到${spacedMatchCount}个去空格匹配项`)
+          }
+          
+          // 如果仍然没有找到匹配项，尝试更灵活的匹配方式
+          if (spacedMatchCount === 0 && searchWithoutSpaces) {
+            console.log(`OCR搜索调试 - 尝试灵活匹配: 搜索"${searchWithoutSpaces}"在OCR文本中`)
+            
+            // 尝试在OCR文本中按字符顺序查找（允许中间有其他字符）
+            let pos = 0
+            let found = true
+            let lastFoundPos = 0
+            
+            for (let char of searchWithoutSpaces.toLowerCase()) {
+              let foundPos = cleanOcrText.toLowerCase().indexOf(char, pos)
+              if (foundPos === -1) {
+                found = false
+                break
+              }
+              pos = foundPos + 1
+              lastFoundPos = foundPos
+            }
+            
+            if (found) {
+              console.log(`OCR搜索调试 - 灵活匹配成功: "${searchWithoutSpaces}"`)
+              matches.push({
+                text: this.searchText,
+                startIndex: lastFoundPos - searchWithoutSpaces.length + 1,
+                endIndex: lastFoundPos + 1,
+                page: pageNum,
+                isFromImage: true, // 标记这是来自图像OCR的结果
+                imageResult: imageResult,
+                matchType: 'flexible-text' // 标记这是通过灵活匹配的
+              })
+            }
+          }
+        } else {
+          // 如果没有执行去空格匹配，也需要尝试灵活匹配
+          if (searchWithoutSpaces) {
+            console.log(`OCR搜索调试 - 尝试灵活匹配: 搜索"${searchWithoutSpaces}"在OCR文本中`)
+            
+            // 先清理OCR文本
+            const cleanOcrText = ocrText.replace(/\s+/g, '')
+            
+            // 尝试在OCR文本中按字符顺序查找（允许中间有其他字符）
+            let pos = 0
+            let found = true
+            let lastFoundPos = 0
+            
+            for (let char of searchWithoutSpaces.toLowerCase()) {
+              let foundPos = cleanOcrText.toLowerCase().indexOf(char, pos)
+              if (foundPos === -1) {
+                found = false
+                break
+              }
+              pos = foundPos + 1
+              lastFoundPos = foundPos
+            }
+            
+            if (found) {
+              console.log(`OCR搜索调试 - 灵活匹配成功: "${searchWithoutSpaces}"`)
+              matches.push({
+                text: this.searchText,
+                startIndex: lastFoundPos - searchWithoutSpaces.length + 1,
+                endIndex: lastFoundPos + 1,
+                page: pageNum,
+                isFromImage: true, // 标记这是来自图像OCR的结果
+                imageResult: imageResult,
+                matchType: 'flexible-text' // 标记这是通过灵活匹配的
+              })
+            }
+          }
+        }
+      }
+      
+      if (directMatchCount === 0 && (!this.searchText || this.searchText.length <= 1 || this.searchText.replace(/\s+/g, '') === this.searchText.replace(/\s+/g, ''))) {
+        console.log(`OCR搜索调试 - 没有找到任何匹配项，OCR文本长度: ${ocrText.length}`)
+      }
+      
+      return matches
+    },
+    
     // 渲染带高亮的PDF页面
     async renderPdfPageWithHighlights(pdf, pageNumber, currentPageMatches) {
-      const page = await pdf.getPage(pageNumber)
-      const scale = 1.5
-      const viewport = page.getViewport({ scale })
-      
-      const canvas = this.$refs.pdfCanvas
-      const context = canvas.getContext('2d')
-      canvas.height = viewport.height
-      canvas.width = viewport.width
-      
-      // 渲染PDF页面
-      const renderContext = {
-        canvasContext: context,
-        viewport: viewport
-      }
-      await page.render(renderContext).promise
+      const { page, context, scale, canvas } = await this.renderBasePdfPage(pdf, pageNumber)
       
       console.log(`开始高亮第${pageNumber}页的${currentPageMatches.length}个匹配项`)
       
@@ -1223,7 +1220,6 @@ export default {
     }
   }
 }
-</script>
 </script>
 
 <style>
