@@ -3,10 +3,11 @@
   "version": "1.0.0",
   "description": "PDF viewer with OCR functionality",
   "main": "index.js",
-  "scripts": {
-    "dev": "webpack serve --mode development",
-    "build": "webpack --mode production",
-    "preview": "webpack --mode production"
+  "scripts": {
+    "dev": "webpack serve --mode development",
+    "build": "webpack --mode production",
+    "preview": "webpack --mode production",
+    "debug": "node start_and_debug.js"
   },
   "dependencies": {
     "@vue-office/docx": "^1.6.3",
@@ -24,6 +25,7 @@
     "css-loader": "^6.8.1",
     "file-loader": "^6.2.0",
     "html-webpack-plugin": "^5.5.3",
+    "puppeteer": "^24.31.0",
     "style-loader": "^3.3.3",
     "vue-loader": "^15.11.1",
     "vue-style-loader": "^4.1.3",

@@ -43,11 +43,12 @@ module.exports = {
       }
     ]
   },
-  plugins: [
-    new VueLoaderPlugin(),
-    new HtmlWebpackPlugin({
-      template: 'index.html'
-    })
+  plugins: [
+    new VueLoaderPlugin(),
+    new HtmlWebpackPlugin({
+      template: './index.html',
+      filename: 'index.html'
+    })
   ],
   resolve: {
     alias: {

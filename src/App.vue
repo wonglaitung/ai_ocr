@@ -85,17 +85,21 @@
         </div>
         <!-- 搜索控件 -->
         <div class="search-controls" v-if="currentFileType === 'pdf' || currentFileType === 'docx'">
-          <el-input 
-            v-model="searchText" 
-            :placeholder="currentFileType === 'pdf' ? '搜索PDF内容' : '搜索文档内容'" 
-            @keyup.enter="performSearch"
-            style="margin-bottom: 10px;"
-            size="small"
-          >
-            <template #append>
-              <el-button @click="performSearch" icon="el-icon-search" size="small"></el-button>
-            </template>
-          </el-input>
+          <el-input 
+            v-model="searchText" 
+            :placeholder="currentFileType === 'pdf' ? '搜索PDF内容' : '搜索文档内容'" 
+            @keyup.enter="performSearch"
+            style="margin-bottom: 10px;"
+            size="small"
+          >
+            <template #append>
+              <el-button @click="performSearch" icon="el-icon-search" size="small"></el-button>
+            </template>
+          </el-input>
+          <!-- 调试按钮 -->
+          <el-button @click="toggleDebugMode" size="small" :type="debugMode ? 'primary' : 'default'">
+            {{ debugMode ? '调试模式: 开' : '调试模式: 关' }}
+          </el-button>
           <!-- PDF 搜索结果信息 -->
           <div v-if="currentFileType === 'pdf' && searchResults.length > 0" class="search-info">
             <div class="search-navigation">
@@ -162,7 +166,8 @@ export default {
       docxSearchResults: [], // DOCX 搜索结果
       currentDocxSearchIndex: -1, // 当前 DOCX 搜索结果索引
       pdfImages: [], // 存储PDF页面中的图像
-      ocrResults: {} // 存储OCR结果，按页码索引
+      ocrResults: {}, // 存储OCR结果，按页码索引
+      debugMode: false // 调试模式，用于可视化文本项边界
     }
   },
   mounted() {
@@ -648,12 +653,13 @@ export default {
           }
         )
         
-        // 保存OCR结果和图像位置信息
-        return {
-          text: result.data.text,
-          imageId: imageId,
-          pageIndex: this.pageNum - 1, // PDF.js使用0基索引
-          boundingRect: null // 暂时无法获取图像在页面上的确切位置
+        // 保存OCR结果和图像位置信息
+        return {
+          text: result.data.text,
+          imageId: imageId,
+          pageIndex: this.pageNum - 1, // PDF.js使用0基索引
+          boundingRect: null, // 暂时无法获取图像在页面上的确切位置
+          ocrData: result.data // 保存完整的OCR数据，可能包含位置信息
         }
       } catch (error) {
         console.error(`处理图像${i+1}时出错:`, error)
@@ -855,70 +861,118 @@ export default {
     }
   },
     
-    // 在内容中搜索文本
-    searchTextInContent(fullText, pageNum) {
-      const matches = []
-      let searchStart = 0
-      let searchIndex
-      
-      // 先尝试直接匹配（原始文本）
-      while ((searchIndex = fullText.toLowerCase().indexOf(this.searchText.toLowerCase(), searchStart)) !== -1) {
-        matches.push({
-          text: this.searchText,
-          startIndex: searchIndex,
-          endIndex: searchIndex + this.searchText.length,
-          page: pageNum
-        })
-        searchStart = searchIndex + 1
-      }
-      
-      // 如果没有找到匹配项，尝试去除空格后匹配
-      if (this.searchText && this.searchText.length > 1) { // 只对长度大于1的搜索词进行空格处理
-        const searchWithoutSpaces = this.searchText.replace(/\s+/g, '')
-        if (searchWithoutSpaces && searchWithoutSpaces !== this.searchText.replace(/\s+/g, '')) {
-          let cleanFullText = fullText.replace(/\s+/g, '')
-          let cleanSearchStart = 0
-          let cleanSearchIndex
-          
-          while ((cleanSearchIndex = cleanFullText.toLowerCase().indexOf(searchWithoutSpaces.toLowerCase(), cleanSearchStart)) !== -1) {
-            matches.push({
-              text: this.searchText,
-              startIndex: cleanSearchIndex,
-              endIndex: cleanSearchIndex + searchWithoutSpaces.length,
-              page: pageNum,
-              matchType: 'spaced-text' // 标记这是通过去除空格匹配的
-            })
-            cleanSearchStart = cleanSearchIndex + 1
-          }
-        }
-      }
-      
-      return matches
+    // 在内容中搜索文本
+    searchTextInContent(fullText, pageNum) {
+      console.log(`Searching for: "${this.searchText}" in full text of length: ${fullText.length}`);
+      const matches = [];
+      let searchStart = 0;
+      let searchIndex;
+      
+      // 使用更精确的匹配方法，处理中文字符
+      const searchTextLower = this.searchText.toLowerCase();
+      const fullTextLower = fullText.toLowerCase();
+      
+      console.log(`Searching for: "${searchTextLower}" in full text`);
+      
+      // 先尝试直接匹配（原始文本）
+      while ((searchIndex = fullTextLower.indexOf(searchTextLower, searchStart)) !== -1) {
+        console.log(`Found match at index: ${searchIndex}`);
+        matches.push({
+          text: this.searchText,
+          startIndex: searchIndex,
+          endIndex: searchIndex + this.searchText.length,
+          page: pageNum,
+          // 添加全文中的位置信息
+          fullTextIndex: searchIndex
+        });
+        searchStart = searchIndex + 1;
+      }
+      
+      console.log(`Direct matches found: ${matches.length}`);
+      
+      // 如果没有找到匹配项，尝试其他匹配策略
+      if (matches.length === 0 && this.searchText && this.searchText.length > 1) {
+        console.log("No direct matches found, trying fuzzy matching");
+        // 尝试模糊匹配（处理可能的字符间距问题）
+        const fuzzyPatterns = [
+          this.searchText.replace(/(.)/g, '$1'),  // 原始模式
+          this.searchText.replace(/\s+/g, '')      // 无空格模式
+        ];
+        
+        for (const pattern of fuzzyPatterns) {
+          if (pattern !== this.searchText) {
+            console.log(`Trying fuzzy pattern: "${pattern}"`);
+            const patternLower = pattern.toLowerCase();
+            let fuzzySearchStart = 0;
+            let fuzzySearchIndex;
+            
+            while ((fuzzySearchIndex = fullTextLower.indexOf(patternLower, fuzzySearchStart)) !== -1) {
+              console.log(`Found fuzzy match at index: ${fuzzySearchIndex}`);
+              matches.push({
+                text: this.searchText,
+                startIndex: fuzzySearchIndex,
+                endIndex: fuzzySearchIndex + pattern.length,
+                page: pageNum,
+                matchType: 'fuzzy',
+                fullTextIndex: fuzzySearchIndex
+              });
+              fuzzySearchStart = fuzzySearchIndex + 1;
+            }
+          }
+        }
+      }
+      
+      console.log(`Total matches found: ${matches.length}`, matches);
+      return matches;
     },
     
-    // 在OCR文本中搜索
-    searchTextInOCR(ocrText, pageNum, imageResult) {
-      const matches = []
-      let ocrSearchStart = 0
-      let ocrSearchIndex
-      
-      console.log(`OCR搜索调试 - 搜索词: "${this.searchText}", OCR文本: "${ocrText.substring(0, 100)}..."`)
-      
-      // 处理OCR文本中的空格问题
-      // 先尝试直接匹配（原始文本）
-      let directMatchCount = 0
-      while ((ocrSearchIndex = ocrText.toLowerCase().indexOf(this.searchText.toLowerCase(), ocrSearchStart)) !== -1) {
-        console.log(`在OCR文本中找到直接匹配: "${this.searchText}" at index ${ocrSearchIndex}`)
-        matches.push({
-          text: this.searchText,
-          startIndex: ocrSearchIndex,
-          endIndex: ocrSearchIndex + this.searchText.length,
-          page: pageNum,
-          isFromImage: true, // 标记这是来自图像OCR的结果
-          imageResult: imageResult
-        })
-        ocrSearchStart = ocrSearchIndex + 1
-        directMatchCount++
+    // 在OCR文本中搜索
+    searchTextInOCR(ocrText, pageNum, imageResult) {
+      const matches = []
+      let ocrSearchStart = 0
+      let ocrSearchIndex
+      
+      console.log(`OCR搜索调试 - 搜索词: "${this.searchText}", OCR文本: "${ocrText.substring(0, 100)}..."`, imageResult)
+      
+      // 如果有OCR数据包含位置信息，尝试利用这些信息
+      if (imageResult && imageResult.ocrData && imageResult.ocrData.words) {
+        console.log(`OCR数据中包含 ${imageResult.ocrData.words.length} 个文字对象`);
+        // 遏找匹配的文字并获取其位置
+        for (const word of imageResult.ocrData.words) {
+          if (word.text && (word.text.includes(this.searchText) || this.searchText.includes(word.text))) {
+            console.log(`在OCR数据中找到匹配文字: "${word.text}", 位置:`, word.bbox);
+            matches.push({
+              text: this.searchText, // 使用搜索词而不是完整文本
+              startIndex: ocrText.toLowerCase().indexOf(this.searchText.toLowerCase()),
+              endIndex: ocrText.toLowerCase().indexOf(this.searchText.toLowerCase()) + this.searchText.length,
+              page: pageNum,
+              isFromImage: true, // 标记这是来自图像OCR的结果
+              imageResult: imageResult,
+              boundingRect: word.bbox // 保存文字的边界框信息
+            });
+          }
+        }
+      }
+      
+      // 处理OCR文本中的空格问题
+      // 先尝试直接匹配（原始文本）
+      let directMatchCount = 0
+      while ((ocrSearchIndex = ocrText.toLowerCase().indexOf(this.searchText.toLowerCase(), ocrSearchStart)) !== -1) {
+        console.log(`在OCR文本中找到直接匹配: "${this.searchText}" at index ${ocrSearchIndex}`)
+        // 检查是否已经添加了此匹配（避免重复）
+        const alreadyExists = matches.some(m => m.startIndex === ocrSearchIndex);
+        if (!alreadyExists) {
+          matches.push({
+            text: this.searchText,
+            startIndex: ocrSearchIndex,
+            endIndex: ocrSearchIndex + this.searchText.length,
+            page: pageNum,
+            isFromImage: true, // 标记这是来自图像OCR的结果
+            imageResult: imageResult
+          })
+        }
+        ocrSearchStart = ocrSearchIndex + 1
+        directMatchCount++
       }
       
       // 如果没有找到直接匹配，尝试去除空格后匹配
@@ -1031,193 +1085,524 @@ export default {
       return matches
     },
     
-    // 渲染带高亮的PDF页面
-    async renderPdfPageWithHighlights(pdf, pageNumber, currentPageMatches) {
-      const { page, context, scale, canvas } = await this.renderBasePdfPage(pdf, pageNumber)
-      
-      console.log(`开始高亮第${pageNumber}页的${currentPageMatches.length}个匹配项`)
-      
-      // 高亮当前页面的匹配项
-      if (currentPageMatches && currentPageMatches.length > 0) {
-        // 获取当前搜索结果（用于突出显示）
-        const currentResult = this.searchResults[this.currentSearchIndex]
-        console.log(`当前选中的搜索结果:`, currentResult)
-        
-        // 设置高亮样式
-        context.fillStyle = 'rgba(255, 255, 0, 0.5)' // 黄色半透明（普通高亮）
-        context.strokeStyle = 'red'
-        context.lineWidth = 1.5
-        
-        // 获取当前页面的文本内容
-        const textContent = await page.getTextContent()
-        const items = textContent.items
-        
-        console.log(`页面文本项数量: ${items.length}`)
-        
-        // 遍历文本项，高亮包含搜索词的内容
-        for (let i = 0; i < items.length; i++) {
-          const item = items[i]
-          // 检查当前文本项是否包含搜索词
-          if (item.str.toLowerCase().includes(this.searchText.toLowerCase())) {
-            // 使用PDF.js的变换矩阵来计算准确位置
-            const transform = item.transform
-            // 计算实际坐标 (PDF坐标系与Canvas坐标系不同，需要转换)
-            const x = transform[4] * scale
-            const y = canvas.height - (transform[5] * scale + (item.height || 12) * scale)
-            // 计算宽度和高度
-            const width = item.width ? item.width * scale : context.measureText(item.str).width
-            const height = (item.height || 14) * scale * 1.2 // 增加高度以完全覆盖文字
-            
-            console.log(`发现页面文本匹配: "${item.str}", 位置: (${x}, ${y}), 尺寸: ${width}x${height}`)
-            
-            // 检查这是否是当前选中的搜索结果
-            const isCurrentResult = currentResult && 
-              currentResult.page === pageNumber && 
-              !currentResult.isFromImage && // 不是来自图像OCR的结果
-              Math.abs(currentResult.startIndex - item.str.toLowerCase().indexOf(this.searchText.toLowerCase())) < item.str.length
-              
-            // 添加调试日志
-            if (item.str.toLowerCase().includes(this.searchText.toLowerCase())) {
-              console.log(`页面文本匹配调试 - 搜索词: "${this.searchText}", 匹配文本: "${item.str}", 位置: ${item.transform[4]}, ${item.transform[5]}`)
-            }
-            
-            // 绘制高亮矩形
-            if (isCurrentResult) {
-              // 当前选中的结果使用不同的颜色
-              context.fillStyle = 'rgba(255, 165, 0, 0.8)' // 橙色半透明
-              context.fillRect(x, y, width, height)
-              context.fillStyle = 'rgba(255, 255, 0, 0.5)' // 恢复为黄色
-              console.log(`高亮当前选中的页面文本: "${item.str}"`)
-            } else {
-              // 普通高亮
-              context.fillRect(x, y, width, height)
-              console.log(`高亮普通页面文本: "${item.str}"`)
-            }
-            context.strokeRect(x, y, width, height)
-          }
-        }
-        
-        // 高亮来自图像OCR的结果
-        const imageMatches = currentPageMatches.filter(match => match.isFromImage)
-        console.log(`OCR图像匹配项数量: ${imageMatches.length}`)
-        
-        if (imageMatches.length > 0) {
-          for (const match of imageMatches) {
-            console.log(`处理OCR图像匹配项:`, match)
-            
-            // 获取页面中的图像对象以确定位置
-            const ops = await page.getOperatorList()
-            let imagePosition = null
-            
-            // 尝试找到图像在页面上的位置
-            for (let i = 0; i < ops.fnArray.length; i++) {
-              if (ops.fnArray[i] === pdfjsLib.OPS.paintImageXObject) {
-                const imageId = ops.argsArray[i][0]
-                
-                // 获取图像的位置和尺寸
-                const transform = ops.transformMatrix || page.view
-                if (transform) {
-                  // 计算图像位置
-                  const x = transform[4] * scale
-                  const y = canvas.height - (transform[5] * scale) // 调整Y坐标系
-                  const width = (transform[2] || 100) * scale
-                  const height = (transform[3] || 100) * scale
-                  
-                  // 使用固定位置作为后备方案，但尝试获取更精确的位置
-                  let highlightX = x
-                  let highlightY = y
-                  let highlightWidth = width
-                  let highlightHeight = height > 20 ? height : 20 // 确保高度至少为20px
-                  
-                  // 如果无法获得准确位置，使用页面中央位置并避开其他元素
-                  if (isNaN(x) || x === 0) {
-                    highlightX = canvas.width / 4
-                    highlightY = canvas.height / 2 + (imageMatches.indexOf(match) * 30)
-                    highlightWidth = canvas.width / 2
-                    highlightHeight = 20
-                  }
-                  
-                  // 检查这是否是当前选中的搜索结果
-                  const isCurrentResult = currentResult && 
-                    currentResult.page === pageNumber && 
-                    currentResult.isFromImage &&
-                    currentResult.startIndex === match.startIndex &&
-                    currentResult.endIndex === match.endIndex
-                  
-                  // 绘制高亮矩形
-                  if (isCurrentResult) {
-                    // 当前选中的结果使用不同的颜色
-                    context.fillStyle = 'rgba(255, 165, 0, 0.8)' // 橙色半透明
-                    console.log(`高亮当前选中的OCR文本: "${match.text}"`)
-                  } else {
-                    // 普通高亮
-                    context.fillStyle = 'rgba(255, 255, 0, 0.5)' // 黄色半透明
-                    console.log(`高亮普通OCR文本: "${match.text}"`)
-                  }
-                  
-                  context.fillRect(highlightX, highlightY, highlightWidth, highlightHeight)
-                  context.strokeRect(highlightX, highlightY, highlightWidth, highlightHeight)
-                  
-                  // 恢复填充样式
-                  context.fillStyle = 'rgba(255, 255, 0, 0.5)' // 黄色半透明
-                  break
-                }
-              }
-            }
-            
-            // 如果上面的方法没有成功，使用页面中央位置
-            if (!imagePosition) {
-              // 使用页面中央位置并根据匹配项索引偏移，避免重叠
-              const offsetX = (imageMatches.indexOf(match) % 3 - 1) * 50 // -50, 0, 50
-              const offsetY = Math.floor(imageMatches.indexOf(match) / 3) * 30
-              
-              const highlightX = canvas.width / 2 + offsetX
-              const highlightY = canvas.height / 2 + offsetY
-              const highlightWidth = canvas.width / 3
-              const highlightHeight = 20
-              
-              // 检查这是否是当前选中的搜索结果
-              const isCurrentResult = currentResult && 
-                currentResult.page === pageNumber && 
-                currentResult.isFromImage &&
-                currentResult.startIndex === match.startIndex &&
-                currentResult.endIndex === match.endIndex
-              
-              // 绘制高亮矩形
-              if (isCurrentResult) {
-                // 当前选中的结果使用不同的颜色
-                context.fillStyle = 'rgba(255, 165, 0, 0.8)' // 橙色半透明
-                console.log(`高亮当前选中的OCR文本 (后备): "${match.text}"`)
-              } else {
-                // 普通高亮
-                context.fillStyle = 'rgba(255, 255, 0, 0.5)' // 黄色半透明
-                console.log(`高亮普通OCR文本 (后备): "${match.text}"`)
-              }
-              
-              context.fillRect(highlightX, highlightY, highlightWidth, highlightHeight)
-              context.strokeRect(highlightX, highlightY, highlightWidth, highlightHeight)
-              
-              // 恢复填充样式
-              context.fillStyle = 'rgba(255, 255, 0, 0.5)' // 黄色半透明
-            }
-          }
-        } else {
-          console.log(`第${pageNumber}页没有OCR图像匹配项`)
-        }
-      } else {
-        console.log(`第${pageNumber}页没有匹配项`)
-      }
+    // 渲染带高亮的PDF页面
+    async renderPdfPageWithHighlights(pdf, pageNumber, currentPageMatches) {
+      const { page, context, scale, canvas } = await this.renderBasePdfPage(pdf, pageNumber)
+      
+      console.log(`开始高亮第${pageNumber}页的${currentPageMatches.length}个匹配项`)
+      
+      // 高亮当前页面的匹配项
+      if (currentPageMatches && currentPageMatches.length > 0) {
+        // 获取当前搜索结果（用于突出显示）
+        const currentResult = this.searchResults[this.currentSearchIndex]
+        console.log(`当前选中的搜索结果:`, currentResult)
+        
+        // 设置高亮样式
+        context.fillStyle = 'rgba(255, 255, 0, 0.5)' // 黄色半透明（普通高亮）
+        context.strokeStyle = 'red'
+        context.lineWidth = 1.5
+        
+        // 获取当前页面的文本内容
+        const textContent = await page.getTextContent()
+        const items = textContent.items
+        
+        console.log(`页面文本项数量: ${items.length}`)
+        
+        // 创建字符级映射以精确定位每个字符的位置
+        let fullText = '';
+        const charToItemMap = []; // 存储每个字符索引对应的文本项信息
+        
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          const itemStart = fullText.length;
+          const itemEnd = itemStart + item.str.length;
+          
+          // 为该文本项的每个字符创建映射
+          for (let j = itemStart; j < itemEnd; j++) {
+            charToItemMap.push({
+              itemIndex: i,
+              item: item,
+              charIndexInItem: j - itemStart, // 字符在文本项中的位置
+              absCharIndex: j // 字符在全文中的绝对位置
+            });
+          }
+          
+          fullText += item.str;
+        }
+        console.log(`Reconstructed full text: "${fullText.substring(0, 100)}..." (length: ${fullText.length})`);
+        console.log(`Character-to-item map size: ${charToItemMap.length}`);
+        console.log(`Total matches to process: ${currentPageMatches.length}`);
+        
+        // 遍历当前页面的匹配项并高亮
+        for (const match of currentPageMatches) {
+          console.log(`Processing match: "${match.text}" at fullTextIndex: ${match.fullTextIndex}`);
+          
+          // 检查起始位置是否在映射范围内
+          if (match.fullTextIndex >= 0 && match.fullTextIndex < charToItemMap.length) {
+            const startCharInfo = charToItemMap[match.fullTextIndex];
+            const endCharIndex = match.fullTextIndex + match.text.length - 1;
+            
+            if (endCharIndex < charToItemMap.length) {
+              const endCharInfo = charToItemMap[endCharIndex];
+              
+              // 如果起始和结束字符在同一个文本项中
+              if (startCharInfo.itemIndex === endCharInfo.itemIndex) {
+                console.log(`Match found in single item ${startCharInfo.itemIndex}, text: "${startCharInfo.item.str}"`);
+                const item = startCharInfo.item;
+                
+                // 使用专门的函数计算匹配文本的精确边界
+                const bounds = this.calculateSubstringBounds(item, match.text, match.fullTextIndex, canvas, scale, items);
+                const x = bounds.x;
+                const y = bounds.y;
+                const width = bounds.width;
+                const height = bounds.height;
+                
+                console.log(`高亮匹配项: "${match.text}", 位置: (${x}, ${y}), 尺寸: ${width}x${height}`)
+                
+                // 检查这是否是当前选中的搜索结果
+                const isCurrentResult = currentResult && 
+                  currentResult.page === pageNumber && 
+                  !currentResult.isFromImage && // 不是来自图像OCR的结果
+                  currentResult.fullTextIndex === match.fullTextIndex // 匹配完整文本索引
+                
+                // 绘制高亮矩形
+                if (isCurrentResult) {
+                  // 当前选中的结果使用不同的颜色
+                  context.fillStyle = 'rgba(255, 165, 0, 0.8)' // 橙色半透明
+                  context.fillRect(x, y, width, height)
+                  context.fillStyle = 'rgba(255, 255, 0, 0.5)' // 恢复为黄色
+                  console.log(`高亮当前选中的页面文本: "${item.str}"`)
+                } else {
+                  // 普通高亮
+                  context.fillRect(x, y, width, height)
+                  console.log(`高亮普通页面文本: "${item.str}"`)
+                }
+                // 确保绘制边框，使其更明显
+                context.lineWidth = 1.5;
+                context.strokeStyle = 'red';
+                context.strokeRect(x, y, width, height);
+                // 恢复原始线宽
+                context.lineWidth = 1.5;
+                
+                // 调试模式：如果启用，可视化文本项边界和匹配信息
+                if (this.debugMode) {
+                    // 绘制文本项边界框（用于调试，用蓝色）
+                    const originalStrokeStyle = context.strokeStyle;
+                    const originalLineWidth = context.lineWidth;
+                    const originalFillStyle = context.fillStyle;
+                    
+                    // 使用专门的函数计算匹配文本的精确边界
+                    const bounds = this.calculateSubstringBounds(item, match.text, match.fullTextIndex, canvas, scale, items);
+                    
+                    context.strokeStyle = '#0000FF'; // 蓝色边框 - 显示计算的文本边界
+                    context.lineWidth = 1;
+                    context.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+                    
+                    // 绘制高亮边界（用于调试，用绿色虚线）- 显示实际绘制的高亮区域
+                    context.setLineDash([5, 3]); // 设置虚线样式
+                    context.strokeStyle = '#00FF00'; // 绿色虚线
+                    context.strokeRect(x, y, width, height);
+                    context.setLineDash([]); // 重置为实线
+                    
+                    // 在文本框旁边显示文本内容和索引（用于调试，用红色小字）
+                    context.fillStyle = '#FF0000'; // 红色文字
+                    context.font = '10px sans-serif';
+                    const textToShow = `"${item.str.substring(0, 10)}" [${startCharInfo.itemIndex}]`;
+                    context.fillText(textToShow, bounds.x, bounds.y + bounds.height + 12);
+                    
+                    // 显示坐标信息（用于调试，用紫色小字）
+                    context.fillStyle = '#800080'; // 紫色文字
+                    context.fillText(`PDF(${item.transform[4]},${item.transform[5]}) → Canvas(${Math.round(bounds.x)},${Math.round(bounds.y)})`, bounds.x, bounds.y + bounds.height + 24);
+                    
+                    // 恢复原始样式
+                    context.strokeStyle = originalStrokeStyle;
+                    context.lineWidth = originalLineWidth;
+                    context.fillStyle = originalFillStyle;
+                }
+              } else {
+                // 如果匹配跨越多个文本项，需要特殊处理
+                console.log(`Match spans multiple items from ${startCharInfo.itemIndex} to ${endCharInfo.itemIndex}`);
+                // 在这种情况下，我们高亮起始文本项的相应部分
+                const item = startCharInfo.item;
+                
+                // 使用起始文本项的边界进行高亮
+                const bounds = this.calculateTextItemBounds(item, canvas, scale);
+                const x = bounds.x;
+                const y = bounds.y;
+                const width = bounds.width;
+                const height = bounds.height;
+                
+                console.log(`高亮跨越项匹配: "${match.text}", 位置: (${x}, ${y}), 尺寸: ${width}x${height}`)
+                
+                // 检查这是否是当前选中的搜索结果
+                const isCurrentResult = currentResult && 
+                  currentResult.page === pageNumber && 
+                  !currentResult.isFromImage && // 不是来自图像OCR的结果
+                  currentResult.fullTextIndex === match.fullTextIndex // 匹配完整文本索引
+                
+                // 绘制高亮矩形
+                if (isCurrentResult) {
+                  // 当前选中的结果使用不同的颜色
+                  context.fillStyle = 'rgba(255, 165, 0, 0.8)' // 橙色半透明
+                  context.fillRect(x, y, width, height)
+                  context.fillStyle = 'rgba(255, 255, 0, 0.5)' // 恢复为黄色
+                  console.log(`高亮跨越项的页面文本: "${item.str}"`)
+                } else {
+                  // 普通高亮
+                  context.fillRect(x, y, width, height)
+                  console.log(`高亮跨越项的页面文本: "${item.str}"`)
+                }
+                context.strokeRect(x, y, width, height)
+              }
+            } else {
+              console.log(`End index ${endCharIndex} out of bounds for charToItemMap (length: ${charToItemMap.length})`);
+            }
+          } else {
+            console.log(`Start index ${match.fullTextIndex} out of bounds for charToItemMap (length: ${charToItemMap.length})`);
+          }
+        }
+        
+        // 高亮来自图像OCR的结果
+        const imageMatches = currentPageMatches.filter(match => match.isFromImage)
+        console.log(`OCR图像匹配项数量: ${imageMatches.length}`)
+        
+        if (imageMatches.length > 0) {
+          for (const match of imageMatches) {
+            console.log(`处理OCR图像匹配项:`, match)
+            
+            // 尝试从OCR结果中获取更精确的文字位置信息
+            if (match.boundingRect) {
+              // 如果搜索匹配中直接包含了边界框信息（从OCR数据中获取的）
+              const rect = match.boundingRect;
+              const highlightX = rect.x * scale;
+              const highlightY = canvas.height - (rect.y + rect.height) * scale; // Y坐标转换
+              const highlightWidth = rect.width * scale;
+              const highlightHeight = rect.height * scale;
+              
+              // 检查这是否是当前选中的搜索结果
+              const isCurrentResult = currentResult && 
+                currentResult.page === pageNumber && 
+                currentResult.isFromImage &&
+                currentResult.startIndex === match.startIndex &&
+                currentResult.endIndex === match.endIndex
+              
+              // 绘制高亮矩形
+              if (isCurrentResult) {
+                // 当前选中的结果使用不同的颜色
+                context.fillStyle = 'rgba(255, 165, 0, 0.8)' // 橙色半透明
+                console.log(`高亮当前选中的OCR文本 (使用OCR边界框): "${match.text}"`)
+              } else {
+                // 普通高亮
+                context.fillStyle = 'rgba(255, 255, 0, 0.5)' // 黄色半透明
+                console.log(`高亮普通OCR文本 (使用OCR边界框): "${match.text}"`)
+              }
+              
+              context.fillRect(highlightX, highlightY, highlightWidth, highlightHeight)
+              // 确保OCR结果也有明显的边框
+              context.lineWidth = 1.5;
+              context.strokeStyle = 'red';
+              context.strokeRect(highlightX, highlightY, highlightWidth, highlightHeight);
+              // 恢复原始线宽
+              context.lineWidth = 1.5;
+              
+              // 恢复填充样式
+              context.fillStyle = 'rgba(255, 255, 0, 0.5)' // 黄色半透明
+            } else if (match.imageResult && match.imageResult.boundingRect) {
+              // 如果没有精确的OCR边界框信息，尝试通过页面操作查找图像位置
+              const ops = await page.getOperatorList()
+              let imagePosition = null
+              
+              // 尝试找到图像在页面上的位置
+              for (let i = 0; i < ops.fnArray.length; i++) {
+                if (ops.fnArray[i] === pdfjsLib.OPS.paintImageXObject) {
+                  const imageId = ops.argsArray[i][0]
+                  
+                  // 获取图像的位置和尺寸
+                  const transform = ops.argsArray[i] // 使用实际的变换矩阵
+                  if (transform && Array.isArray(transform) && transform.length >= 6) {
+                    // transform矩阵 [a, b, c, d, e, f] 其中e, f是平移量
+                    const x = transform[4] * scale
+                    const y = canvas.height - (transform[5] * scale) // 调整Y坐标系
+                    const width = Math.abs(transform[0]) * scale || 200 // a是x方向缩放
+                    const height = Math.abs(transform[3]) * scale || 200 // d是y方向缩放
+                    
+                    // 使用图像位置作为OCR文字的大致位置
+                    // 这种方法不够精确，但比使用固定位置要好
+                    let highlightX = x
+                    let highlightY = y - 30 // 假设文字在图像上方或内部
+                    let highlightWidth = width * 0.3 // 假设"资产总计"大约占图像宽度的30%
+                    let highlightHeight = 20 // 假设文字高度为20px
+                    
+                    // 检查这是否是当前选中的搜索结果
+                    const isCurrentResult = currentResult && 
+                      currentResult.page === pageNumber && 
+                      currentResult.isFromImage &&
+                      currentResult.startIndex === match.startIndex &&
+                      currentResult.endIndex === match.endIndex
+                    
+                    // 绘制高亮矩形
+                    if (isCurrentResult) {
+                      // 当前选中的结果使用不同的颜色
+                      context.fillStyle = 'rgba(255, 165, 0, 0.8)' // 橙色半透明
+                      console.log(`高亮当前选中的OCR文本 (使用图像位置): "${match.text}"`)
+                    } else {
+                      // 普通高亮
+                      context.fillStyle = 'rgba(255, 255, 0, 0.5)' // 黄色半透明
+                      console.log(`高亮普通OCR文本 (使用图像位置): "${match.text}"`)
+                    }
+                    
+                    context.fillRect(highlightX, highlightY, highlightWidth, highlightHeight)
+                    // 确保OCR结果也有明显的边框
+                    context.lineWidth = 1.5;
+                    context.strokeStyle = 'red';
+                    context.strokeRect(highlightX, highlightY, highlightWidth, highlightHeight);
+                    // 恢复原始线宽
+                    context.lineWidth = 1.5;
+                    
+                    // 恢复填充样式
+                    context.fillStyle = 'rgba(255, 255, 0, 0.5)' // 黄色半透明
+                    break
+                  }
+                }
+              }
+              
+              // 如果仍然无法确定位置，使用页面中央位置
+              if (!imagePosition) {
+                // 使用页面中央位置并根据匹配项索引偏移，避免重叠
+                const offsetX = (imageMatches.indexOf(match) % 3 - 1) * 50 // -50, 0, 50
+                const offsetY = Math.floor(imageMatches.indexOf(match) / 3) * 30
+                
+                const highlightX = canvas.width / 2 + offsetX
+                const highlightY = canvas.height / 2 + offsetY
+                const highlightWidth = canvas.width / 3
+                const highlightHeight = 20
+                
+                // 检查这是否是当前选中的搜索结果
+                const isCurrentResult = currentResult && 
+                  currentResult.page === pageNumber && 
+                  currentResult.isFromImage &&
+                  currentResult.startIndex === match.startIndex &&
+                  currentResult.endIndex === match.endIndex
+                
+                // 绘制高亮矩形
+                if (isCurrentResult) {
+                  // 当前选中的结果使用不同的颜色
+                  context.fillStyle = 'rgba(255, 165, 0, 0.8)' // 橙色半透明
+                  console.log(`高亮当前选中的OCR文本 (后备): "${match.text}"`)
+                } else {
+                  // 普通高亮
+                  context.fillStyle = 'rgba(255, 255, 0, 0.5)' // 黄色半透明
+                  console.log(`高亮普通OCR文本 (后备): "${match.text}"`)
+                }
+                
+                context.fillRect(highlightX, highlightY, highlightWidth, highlightHeight)
+                // 确保OCR结果也有明显的边框
+                context.lineWidth = 1.5;
+                context.strokeStyle = 'red';
+                context.strokeRect(highlightX, highlightY, highlightWidth, highlightHeight);
+                // 恢复原始线宽
+                context.lineWidth = 1.5;
+                
+                // 恢复填充样式
+                context.fillStyle = 'rgba(255, 255, 0, 0.5)' // 黄色半透明
+              }
+            }
+          }
+        } else {
+          console.log(`第${pageNumber}页没有OCR图像匹配项`)
+        }
+      } else {
+        console.log(`第${pageNumber}页没有匹配项`)
+      }
     },
     
-    // 格式化文件大小
-    formatFileSize(row, column, cellValue) {
-      if (cellValue < 1024) {
-        return cellValue + ' B'
-      } else if (cellValue < 1024 * 1024) {
-        return (cellValue / 1024).toFixed(1) + ' KB'
-      } else {
-        return (cellValue / (1024 * 1024)).toFixed(1) + ' MB'
-      }
+    // 专门用于计算文本项精确位置的辅助函数
+    calculateTextItemBounds(item, canvas, scale) {
+      const transform = item.transform;
+      const ctx = canvas.getContext('2d');
+      
+      // 使用transform矩阵计算文本的精确位置
+      // transform = [a, b, c, d, e, f] 表示仿射变换矩阵
+      // [4] 和 [5] 分别是x和y方向的平移量
+      const textX = transform[4] * scale;
+      
+      // 获取文本高度，优先使用item.height，否则估算
+      let fontSize = 12; // 默认字体大小
+      if (item.height) {
+        fontSize = item.height;
+      } else {
+        // 从变换矩阵估算字体大小，考虑Y方向的缩放
+        fontSize = Math.abs(transform[3]) || 12;
+      }
+      const textHeight = fontSize * scale * 1.2; // 添加一些额外空间确保完全覆盖
+      
+      // 关键：正确处理PDF坐标系到Canvas坐标系的转换
+      // PDF坐标系原点在左下角，Canvas坐标系原点在左上角
+      // transform[5] 是文本基线在PDF坐标系中的Y坐标（从页面底部算起）
+      const baselineYInPdf = transform[5]; // PDF坐标系中的基线Y坐标
+      const baselineYInCanvas = canvas.height - (baselineYInPdf * scale); // 转换到Canvas坐标系
+      
+      // 文本顶部Y坐标 = 基线Y坐标 - 文本高度
+      // 但需要考虑字体的基线位置，通常基线在字符底部附近
+      const textTopY = baselineYInCanvas - textHeight;
+      
+      // 计算文本宽度
+      let width;
+      if (item.width) {
+        // 如果item提供了宽度信息，直接使用
+        width = item.width * scale;
+      } else {
+        // 否则使用Canvas上下文测量文本宽度
+        const originalFont = ctx.font;
+        // 设置合适的字体大小进行测量
+        ctx.font = `${fontSize * scale}px sans-serif`;
+        width = ctx.measureText(item.str).width;
+        ctx.font = originalFont; // 恢复原始字体
+      }
+      
+      return {
+        x: textX,
+        y: textTopY,
+        width: width,
+        height: textHeight,
+        baselineY: baselineYInCanvas // 基线Y坐标（用于某些特殊计算）
+      };
+    },
+
+    // 基于PDF.js文本层的精确文本高亮方法
+    calculateTextHighlightBounds(item, matchText, charIndexInItem, canvas, scale) {
+      const ctx = canvas.getContext('2d');
+      const originalFont = ctx.font;
+      
+      // 估算字体大小
+      let fontSize = item.height || 12;
+      ctx.font = `${fontSize * scale}px sans-serif`;
+      
+      // 计算匹配文本之前的文本宽度（前缀宽度）
+      const prefixStr = item.str.substring(0, charIndexInItem);
+      const prefixWidth = ctx.measureText(prefixStr).width || 0;
+      
+      // 计算匹配文本的宽度
+      const matchWidth = ctx.measureText(matchText).width || (matchText.length * 8 * scale);
+      
+      // 获取文本项的基础边界
+      const itemBounds = this.calculateTextItemBounds(item, canvas, scale);
+      
+      // 恢复原始字体
+      ctx.font = originalFont;
+      
+      // 返回匹配文本的精确边界
+      return {
+        x: itemBounds.x + prefixWidth,  // 文本项x坐标 + 前缀文本宽度
+        y: itemBounds.y,               // 使用文本项的y坐标
+        width: matchWidth,             // 匹配文本的宽度
+        height: itemBounds.height      // 使用文本项的高度
+      };
+    },
+
+    // 调试版本：渲染PDF页面并可视化文本项位置
+    async debugRenderPdfPageWithTextBounds(pdf, pageNumber) {
+      const { page, context, scale, canvas } = await this.renderBasePdfPage(pdf, pageNumber)
+      
+      // 获取当前页面的文本内容
+      const textContent = await page.getTextContent()
+      const items = textContent.items
+      
+      // 保存原始样式
+      const originalFillStyle = context.fillStyle;
+      const originalStrokeStyle = context.strokeStyle;
+      const originalLineWidth = context.lineWidth;
+      
+      // 绘制所有文本项的边界框
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const bounds = this.calculateTextItemBounds(item, canvas, scale);
+        
+        // 绘制文本项边界框（用蓝色）
+        context.strokeStyle = '#0000FF'; // 蓝色边框
+        context.lineWidth = 1;
+        context.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+        
+        // 在文本框旁边显示文本内容和索引（用红色小字）
+        context.fillStyle = '#FF0000'; // 红色文字
+        context.font = '10px sans-serif';
+        context.fillText(`[${i}]${item.str.substring(0, 10)}`, bounds.x, bounds.y + bounds.height + 12);
+      }
+      
+      // 恢复原始样式
+      context.fillStyle = originalFillStyle;
+      context.strokeStyle = originalStrokeStyle;
+      context.lineWidth = originalLineWidth;
+      
+      return { page, context, scale, canvas, items };
+    },
+
+    // 计算文本项中特定子串的精确位置
+    calculateSubstringBounds(item, matchText, fullTextIndex, canvas, scale, items) {
+      // 重建全文以计算相对位置
+      let reconstructedText = '';
+      let targetItemStartIndex = -1;
+      let targetItemEndIndex = -1;
+      
+      // 找到当前文本项在整个页面文本中的位置
+      for (let i = 0; i < items.length; i++) {
+        if (items[i] === item) {
+          targetItemStartIndex = reconstructedText.length;
+          targetItemEndIndex = targetItemStartIndex + item.str.length;
+          break;
+        }
+        reconstructedText += items[i].str;
+      }
+      
+      console.log(`calculateSubstringBounds: item="${item.str}", matchText="${matchText}", fullTextIndex=${fullTextIndex}, targetItemStartIndex=${targetItemStartIndex}`);
+      
+      if (targetItemStartIndex === -1) {
+        // 如果找不到，使用近似方法
+        console.log("Target item not found in items array, using text item bounds");
+        return this.calculateTextItemBounds(item, canvas, scale);
+      }
+      
+      const matchStartInItem = fullTextIndex - targetItemStartIndex;
+      const matchEndInItem = matchStartInItem + matchText.length;
+      
+      console.log(`matchStartInItem: ${matchStartInItem}, matchEndInItem: ${matchEndInItem}, item.str.length: ${item.str.length}`);
+      
+      // 如果匹配项完全在当前文本项中
+      if (matchStartInItem >= 0 && matchEndInItem <= item.str.length) {
+        const matchStr = item.str.substring(matchStartInItem, matchEndInItem);
+        console.log(`Match found within item: "${matchStr}" at position ${matchStartInItem} in "${item.str}"`);
+        
+        // 使用新的高亮边界计算方法
+        const bounds = this.calculateTextHighlightBounds(item, matchStr, matchStartInItem, canvas, scale);
+        console.log(`Calculated bounds: x=${bounds.x}, y=${bounds.y}, width=${bounds.width}, height=${bounds.height}`);
+        return bounds;
+      } else {
+        // 如果匹配项跨越多个文本项或计算出错，返回整个文本项的边界
+        console.log("Match spans multiple items or calculation error, using full text item bounds");
+        console.log(`Item bounds:`, this.calculateTextItemBounds(item, canvas, scale));
+        return this.calculateTextItemBounds(item, canvas, scale);
+      }
+    },
+
+    // 切换调试模式
+    toggleDebugMode() {
+      this.debugMode = !this.debugMode;
+      console.log(`调试模式已${this.debugMode ? '启用' : '关闭'}`);
+      // 重新渲染当前PDF页面以应用/移除调试可视化
+      if (this.currentFileType === 'pdf' && this.currentFileUrl) {
+        this.renderPdf();
+      }
+    },
+
+    // 格式化文件大小
+    formatFileSize(row, column, cellValue) {
+      if (cellValue < 1024) {
+        return cellValue + ' B'
+      } else if (cellValue < 1024 * 1024) {
+        return (cellValue / 1024).toFixed(1) + ' KB'
+      } else {
+        return (cellValue / (1024 * 1024)).toFixed(1) + ' MB'
+      }
     }
   }
 }
